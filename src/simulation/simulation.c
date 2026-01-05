@@ -13,7 +13,7 @@ Simulation* simulation_create(int width, int height, int type,
     if (!sim) return NULL;
     WorldType typa = (type == 0) ? WORLD_NO_OBSTACLES : WORLD_WITH_OBSTACLES;
     sim->world = world_create(width, height, typa);
-
+                              
     sim->K = K;
     sim->replications = replications;
     sim->p_up = p_up;
@@ -57,7 +57,7 @@ void simulation_run(Simulation* sim) {
         double *sum_steps = calloc(w * h, sizeof(double)); // sum of steps for successful runs
         int *success_count = calloc(w * h, sizeof(int));   // number of successful runs
 
-        for (int rep = 0; rep < sim->replications; rep++) {
+        for (int rep = 1; rep <= sim->replications; rep++) {
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
                     if (world_is_obstacle(sim->world, x, y)) continue;
@@ -113,7 +113,7 @@ void simulation_run(Simulation* sim) {
         return;
     }
 
-    for (int rep = 0; rep < sim->replications; rep++) {
+    for (int rep = 1; rep <= sim->replications; rep++) {
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
 
@@ -136,8 +136,6 @@ void simulation_run(Simulation* sim) {
 
                     snprintf(buf, sizeof(buf), "POS %d %d\n", wkr.x, wkr.y);
                     send(sim->client_sock, buf, strlen(buf), 0);
-                    usleep(500000);
-
                     if (wkr.x == 0 && wkr.y == 0) {
                         hit_center = 1;
                         break;
