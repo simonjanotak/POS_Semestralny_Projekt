@@ -16,3 +16,22 @@ void draw_world(int width, int height, int **obstacles, int px, int py) {
         printf("\n");
     }
 }
+
+void draw_values(double **values, int width, int height) {
+    if (!values) return;
+    for (int y = height - 1; y >= 0; y--) {
+        for (int x = 0; x < width; x++) {
+            double v = values[y][x];
+            if (v < 0.0) {
+                printf("  -  ");
+            } else if (v <= 1.0) {
+                // probability
+                printf("%5.2f", v);
+            } else {
+                // average steps
+                printf("%5.1f", v);
+            }
+        }
+        printf("\n");
+    }
+}

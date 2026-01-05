@@ -1,8 +1,8 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11
 
-SERVER_SRC = src/server/server.c src/world/world.c
-CLIENT_SRC = src/klient/klient.c
+SERVER_SRC = src/server/server.c src/world/world.c src/simulation/simulation.c src/walker/walker.c
+CLIENT_SRC = src/klient/klient.c src/klient/draw.c 
 
 all: server client
 

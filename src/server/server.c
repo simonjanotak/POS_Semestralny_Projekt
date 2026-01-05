@@ -4,8 +4,10 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <time.h>
+
 #include "../world/world.h"
-#include "../walker/walker.h"   // <--- tu voláme walker modul
+#include "../walker/walker.h"
+#include "../simulation/simulation.h"
 
 #define PORT 12345
 #define MAX_CLIENTS 5
@@ -19,6 +21,7 @@ int main() {
     int addrlen = sizeof(address);
     char buffer[MAX_BUFFER];
 
+    // socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == 0) { perror("socket failed"); exit(EXIT_FAILURE); }
 
@@ -37,6 +40,7 @@ int main() {
 
         printf("Client connected!\n");
 
+        // prijmi spravu od klienta
         int n = read(client_sock, buffer, sizeof(buffer)-1);
         if (n <= 0) { close(client_sock); continue; }
         buffer[n] = 0;
@@ -49,32 +53,13 @@ int main() {
             sscanf(buffer, "NEW_SIM %d %d %d %d %d %d %f %f %f %f %s",
                    &width, &height, &K, &replications, &obstacles, &mode,
                    &pu, &pd, &pl, &pr, filename);
+            
 
-            WorldType type = obstacles ? WORLD_WITH_OBSTACLES : WORLD_NO_OBSTACLES;
-            World *w = world_create(width, height, type);
-
-            if (type == WORLD_WITH_OBSTACLES) {
-                int count = width * height / 5; // napr. 20% prekážok
-                world_generate_obstacles(w, count);
-            }
-
-            // --- spusti walker pre každé voľné políčko ---
-            for (int r = 0; r < replications; r++) {
-                for (int y = 0; y < height; y++) {
-                    for (int x = 0; x < width; x++) {
-                        if (!world_is_obstacle(w, x, y)) {
-                            // vytvor walker
-                            Walker wkr;
-                            walker_init(&wkr, x, y);
-
-                            // spusti pohyb, interaktívny mód=mode, K krokov
-                            walker_simulate(&wkr, w, pu, pd, pl, pr, K, mode, client_sock);
-                        }
-                    }
-                }
-            }
-
-            world_destroy(w);
+            Simulation* sim = simulation_create(
+            width, height, obstacles, K, replications, pu, pd, pl, pr, mode, client_sock
+            );
+            simulation_run(sim);
+            simulation_destroy(sim);
         }
         else if (strncmp(buffer, "JOIN_SIM", 8) == 0) {
             send(client_sock, "JOIN SIM NOT IMPLEMENTED\n", 26, 0);

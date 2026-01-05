@@ -1,5 +1,10 @@
 #include "walker.h"
 
+void walker_init(Walker* w, int start_x, int start_y) {
+    w->x = start_x;
+    w->y = start_y;
+}
+
 void walker_step(Walker* w, World* world,
                  float p_up, float p_down,
                  float p_left, float p_right) {
