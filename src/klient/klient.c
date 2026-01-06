@@ -178,6 +178,7 @@ int main() {
     int world_height, world_width, obstacles;
     char buffer[MAX_BUFFER];
     int mod;
+    char obstacles_filename[128] = "";
 
     while (1) {
         print_main_menu();
@@ -200,17 +201,24 @@ int main() {
         printf("Enter maximum steps K: "); scanf("%d", &K);
         printf("Enter number of replications: "); scanf("%d", &replications);
         printf("Add obstacles? (0=no,1=yes): "); scanf("%d", &obstacles);
-        printf("Enter the mode you want 1=summary, 2=innteractive");scanf("%d", &mode);
-        printf("Enter movement probabilities (up down left right), sum=1.0:\n");
+        if (obstacles == 1) {
+            printf("Enter file with obstacles: ");
+            scanf(" %127s", obstacles_filename);
+        } else {
+            obstacles_filename[0] = '\0';
+        }
+        printf("Enter the mode you want 1=summary, 2=innteractive ");scanf("%d", &mode);
+        printf("Enter movement probabilities (up down left right), sum=1.0: \n");
         scanf("%f %f %f %f", &p_up, &p_down, &p_left, &p_right);
         getchar();
         printf("Enter output file name: "); fgets(filename, sizeof(filename), stdin);
         filename[strcspn(filename, "\n")] = 0;
 
-        snprintf(buffer, sizeof(buffer),
-             "NEW_SIM %d %d %d %d %d %d %.2f %.2f %.2f %.2f %s\n",
-             width, height, K, replications, obstacles, mode,
-             p_up, p_down, p_left, p_right, filename);
+           /* send obstacles filename (or empty string) as last token */
+           snprintf(buffer, sizeof(buffer),
+               "NEW_SIM %d %d %d %d %d %d %.2f %.2f %.2f %.2f %127s\n",
+               width, height, K, replications, obstacles, mode,
+               p_up, p_down, p_left, p_right, obstacles_filename);
 
         send(sock, buffer, strlen(buffer), 0);
         mod = mode;

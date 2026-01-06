@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/socket.h> 
 #include <pthread.h>
+#include <stdatomic.h>
 
 static char *safe_strdup(const char *s) {
     if (!s) return NULL;
@@ -48,6 +49,9 @@ Simulation* simulation_create(int width, int height, int world_type,
     sim->interactive = interactive_flag ? 1 : 0;
     sim->client_sock = client_socket;
 
+    atomic_init(&sim->stop_requested, 0);
+    pthread_mutex_init(&sim->send_mutex, NULL);
+
     int cells = width * height;
     sim->sum_steps = calloc(cells, sizeof(double));
     sim->success_counts = calloc(cells, sizeof(int));
@@ -76,6 +80,7 @@ void simulation_destroy(Simulation* sim) {
     if (sim->sum_steps) free(sim->sum_steps);
     if (sim->success_counts) free(sim->success_counts);
     if (sim->world) world_destroy(sim->world);
+    pthread_mutex_destroy(&sim->send_mutex);
     free(sim);
 }
 
@@ -88,6 +93,7 @@ typedef struct {
     int max_steps;
     int replications;
     pthread_mutex_t *rand_mutex; /* chráni nepružné (ne-thread-safe) volanie RNG vo walker_step */
+    pthread_mutex_t *send_mutex; /* zamykanie pri send() */
 } CellWorkerArg;
 /* Funkcia vlákna: vykoná všetky replikácie z jedného štartu a uloží výsledky do polí v `sim` */
 static void *cell_worker(void *arg_void) {
@@ -102,6 +108,8 @@ static void *cell_worker(void *arg_void) {
     int idx = arg->index;
 
     for (int r = 0; r < reps; r++) {
+        /* ak bol požiadaný stop, skonči replikácie */
+        if (atomic_load(&sim->stop_requested)) break;
         Walker walker;
         walker_init(&walker, start_x, start_y);
         int hit_center = 0;
@@ -111,7 +119,17 @@ static void *cell_worker(void *arg_void) {
         char traj_buf[8192];
         traj_buf[0] = '\0';
 
+        /* ak je povolené interaktívne streamovanie, pošli START pred krokmi */
+        if (sim->interactive && sim->client_sock >= 0) {
+            char startmsg[128];
+            snprintf(startmsg, sizeof(startmsg), "START %d %d %d\n", start_x, start_y, r+1);
+            pthread_mutex_lock(arg->send_mutex);
+            send(sim->client_sock, startmsg, strlen(startmsg), 0);
+            pthread_mutex_unlock(arg->send_mutex);
+        }
+
         for (steps_taken = 0; steps_taken < K; steps_taken++) {
+            if (atomic_load(&sim->stop_requested)) { break; }
             if (arg->rand_mutex) pthread_mutex_lock(arg->rand_mutex);
             walker_step(&walker, sim->world, sim->p_up, sim->p_down, sim->p_left, sim->p_right);
             if (arg->rand_mutex) pthread_mutex_unlock(arg->rand_mutex);
@@ -120,12 +138,28 @@ static void *cell_worker(void *arg_void) {
             snprintf(piece, sizeof(piece), "%d %d\n", walker.x, walker.y);
             strncat(traj_buf, piece, sizeof(traj_buf) - strlen(traj_buf) - 1);
 
+            /* ak je povolené interaktívne, pošli pozíciu */
+            if (sim->interactive && sim->client_sock >= 0) {
+                char posmsg[64]; snprintf(posmsg, sizeof(posmsg), "POS %d %d\n", walker.x, walker.y);
+                pthread_mutex_lock(arg->send_mutex);
+                send(sim->client_sock, posmsg, strlen(posmsg), 0);
+                pthread_mutex_unlock(arg->send_mutex);
+            }
+
             if (walker.x == 0 && walker.y == 0) { hit_center = 1; break; }
         }
 
         if (hit_center) {
             successes++;
             steps_sum += (double)steps_taken;
+        }
+
+        /* ak je povolené interaktívne streamovanie, pošli END teraz (posledná pozícia už bola poslaná) */
+        if (sim->interactive && sim->client_sock >= 0) {
+            char endmsg[64]; snprintf(endmsg, sizeof(endmsg), "END %d %d\n", steps_taken, hit_center);
+            pthread_mutex_lock(arg->send_mutex);
+            send(sim->client_sock, endmsg, strlen(endmsg), 0);
+            pthread_mutex_unlock(arg->send_mutex);
         }
 
         /* uložiť trajektóriu pre túto replikáciu (slot = idx * reps + r) */
@@ -181,6 +215,7 @@ void simulation_run(Simulation* sim) {
             args[thread_count].max_steps = sim->K;
             args[thread_count].replications = reps;
             args[thread_count].rand_mutex = &rand_mutex;
+            args[thread_count].send_mutex = &sim->send_mutex;
 
             if (pthread_create(&threads[thread_count], NULL, cell_worker, &args[thread_count]) != 0) {
                 /* ak sa vlákno nevytvorí, vykonaj úlohu v hlavnom vlákne ako záložnú možnosť */

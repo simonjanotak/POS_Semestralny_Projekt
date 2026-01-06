@@ -4,6 +4,7 @@
 
 #include "../world/world.h"
 #include "../walker/walker.h"
+#include <stdatomic.h>
 
 typedef struct {
     World* world;
@@ -16,6 +17,7 @@ typedef struct {
     double *sum_steps;       /* length = width*height */
     int *success_counts;     /* length = width*height */
     char **representative_traj; /* per-cell stored trajectory strings */
+    atomic_int stop_requested;  /* set to non-zero to request run stop */
 } Simulation;
 
 Simulation* simulation_create(int width, int height, int type,

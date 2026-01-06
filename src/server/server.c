@@ -73,6 +73,11 @@ int main() {
                     continue;
                 }
 
+                /* Ak bol zadaný súbor s prekážkami, načítaj ho do sveta */
+                if (obstacles == 1 && filename[0] != '\0') {
+                    read_file_with_obstacles(current_sim->world, filename);
+                }
+
                 /* spusti jednu simuláciu (vnútri môže bežať viac vlákien na zber štatisík) */
                 simulation_run(current_sim);
 
@@ -105,8 +110,13 @@ int main() {
                     send(client_sock, "ERROR invalid_mode\n", 19, 0);
                 }
             } else if (strncmp(buffer, "STOP_SIM", 8) == 0) {
-                /* príkaz na zastavenie simulácie (tu len potvrdíme, výsledky sú už zabehnuté) */
-                send(client_sock, "STOP_OK\n", 8, 0);
+                /* príkaz na zastavenie simulácie počas behu: nastavíme stop flag */
+                if (current_sim) {
+                    atomic_store(&current_sim->stop_requested, 1);
+                    send(client_sock, "STOP_OK\n", 8, 0);
+                } else {
+                    send(client_sock, "ERROR no_simulation\n", 20, 0);
+                }
             } else if (strncmp(buffer, "QUIT", 4) == 0) {
                 printf("client requested quit\n");
                 close(client_sock);

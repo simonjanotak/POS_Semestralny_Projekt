@@ -1,5 +1,6 @@
 #ifndef WORLD_H
 #define WORLD_H
+#include <stdio.h>
 
 typedef enum {
     WORLD_NO_OBSTACLES,
@@ -19,7 +20,7 @@ void world_destroy(World* w);
 
 /* práca so svetom */
 int world_is_obstacle(World* w, int x, int y);
-
+void read_file_with_obstacles(World* w, const char* filename);
 /* wrap-around pohyb */
 void world_wrap(World* w, int *x, int *y);
 
