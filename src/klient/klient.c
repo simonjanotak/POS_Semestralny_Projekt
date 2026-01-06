@@ -10,6 +10,12 @@
 #define PORT 12345
 #define MAX_BUFFER 1024
 
+/*
+ * Klient pre komunikáciu so serverom simulácie.
+ * - posiela príkazy NEW_SIM / SET_MODE / STOP_SIM
+ * - prijíma a spracováva riadkové správy od servera
+ */
+
 void print_main_menu() {
     printf("\n=== Random Walk Client ===\n");
     printf("1 - New Simulation\n");
@@ -19,6 +25,7 @@ void print_main_menu() {
     printf("Choice: ");
 }
 
+/* Vytvorí TCP spojenie na lokálny server a vráti socket alebo -1 pri chybe */
 int connect_to_server() {
     int sock;
     struct sockaddr_in serv_addr;
@@ -53,6 +60,7 @@ void process_server(int sock, int world_width, int world_height, int mod, int **
     memset(recv_accum, 0, sizeof(recv_accum));
 
     while (1) {
+        /* Používame select() na čítanie zo servera aj príkazov od používateľa (stdin) */
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(sock, &rfds);
@@ -62,6 +70,7 @@ void process_server(int sock, int world_width, int world_height, int mod, int **
         if (sel < 0) { perror("select"); break; }
 
         if (FD_ISSET(STDIN_FILENO, &rfds)) {
+            /* Spracovanie lokálnych príkazov používateľa (mode/stop/quit/help) */
             char line_in[256];
             if (!fgets(line_in, sizeof(line_in), stdin)) { /* EOF */ }
             size_t L = strcspn(line_in, "\r\n"); line_in[L] = '\0';
@@ -72,13 +81,13 @@ void process_server(int sock, int world_width, int world_height, int mod, int **
                 return;
             }
 
-            if (strncmp(line_in, "mode ", 5) == 0) {
+             if (strncmp(line_in, "mode ", 5) == 0) {
                 int newm = atoi(line_in + 5);
                 if (newm == 1 || newm == 2) {
                     char out[64]; snprintf(out, sizeof(out), "SET_MODE %d\n", newm);
                     send(sock, out, strlen(out), 0);
-                    mod = newm;
-                    printf("Requested mode %d\n", newm);
+                    /* Lokálny `mod` nemeníme tu — čakáme na potvrdenie "MODE <n>" zo servera */
+                    printf("Režim %d požiadavka odoslaná — čakám na potvrdenie zo servera\n", newm);
                 } else printf("Invalid mode (1 or 2)\n");
             } else if (strcmp(line_in, "stop") == 0) {
                 send(sock, "STOP_SIM\n", 9, 0);
@@ -91,6 +100,7 @@ void process_server(int sock, int world_width, int world_height, int mod, int **
         }
 
         if (FD_ISSET(sock, &rfds)) {
+            /* Prijaté bajty od servera: agregujeme do vnútorného akumulátora a delíme podľa '\n' */
             int n = read(sock, buffer, sizeof(buffer)-1);
             if (n <= 0) { printf("Server disconnected.\n"); close(sock); return; }
             if (accum_len + n >= (int)sizeof(recv_accum)) { accum_len = 0; memset(recv_accum,0,sizeof(recv_accum)); }

@@ -16,69 +16,102 @@
 int main() {
     srand(time(NULL));
 
-    int server_fd, client_sock;
+    int server_fd = -1, client_sock = -1;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
     char buffer[MAX_BUFFER];
 
-    // socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == 0) { perror("socket failed"); exit(EXIT_FAILURE); }
+    if (server_fd < 0) { perror("socket failed"); return 1; }
 
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
 
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) { perror("bind failed"); exit(EXIT_FAILURE); }
-    if (listen(server_fd, MAX_CLIENTS) < 0) { perror("listen"); exit(EXIT_FAILURE); }
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) { perror("bind failed"); close(server_fd); return 1; }
+    if (listen(server_fd, MAX_CLIENTS) < 0) { perror("listen"); close(server_fd); return 1; }
 
-     printf("Server listening on port %d...\n", PORT);
+    printf("Server listening on port %d...\n", PORT);
+
+    Simulation *current_sim = NULL;
 
     while (1) {
         client_sock = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
-        if (client_sock < 0) { perror("accept"); continue; }
-
-        printf("Client connected!\n");
+        if (client_sock < 0) {
+            perror("accept");
+            continue;
+        }
+        printf("Client connected, fd=%d\n", client_sock);
 
         while (1) {
-            int n = read(client_sock, buffer, sizeof(buffer)-1);
-            if (n <= 0) { printf("Client disconnected.\n"); break; }
-            buffer[n] = 0;
+            ssize_t n = read(client_sock, buffer, sizeof(buffer)-1);
+            if (n <= 0) { printf("client disconnected or read error\n"); close(client_sock); break; }
+            buffer[n] = '\0';
 
             if (strncmp(buffer, "NEW_SIM", 7) == 0) {
                 int width, height, K, replications, obstacles, mode;
                 float pu, pd, pl, pr;
-                char filename[128];
+                char filename[128] = {0};
 
-                sscanf(buffer, "NEW_SIM %d %d %d %d %d %d %f %f %f %f %s",
-                       &width, &height, &K, &replications, &obstacles, &mode,
-                       &pu, &pd, &pl, &pr, filename);
-
-                int interactive_flag = (mode == 2) ? 1 : 0;
-                Simulation* sim = simulation_create(
-                    width, height, obstacles, K, replications, pu, pd, pl, pr, interactive_flag, client_sock
-                );
-                if (!sim) {
-                    send(client_sock, "ERROR simulation_create\n", 23, 0);
-                } else {
-                    simulation_run(sim);
-                    simulation_destroy(sim);
+                int scanned = sscanf(buffer, "NEW_SIM %d %d %d %d %d %d %f %f %f %f %127s",
+                           &width, &height, &K, &replications, &obstacles, &mode,
+                           &pu, &pd, &pl, &pr, filename);
+                if (scanned < 10) {
+                    send(client_sock, "ERROR bad_NEW_SIM\n", 18, 0);
+                    continue;
                 }
-                /* after finishing a simulation, keep connection open for more commands */
-            }
-            else if (strncmp(buffer, "SET_MODE", 8) == 0) {
-                /* ACK only — to fully change running simulation behavior, simulation_run must check for control messages */
-                send(client_sock, "MODE_OK\n", 8, 0);
-            }
-            else if (strncmp(buffer, "STOP_SIM", 8) == 0) {
-                /* ACK only — to actually stop a running simulation, simulation_run must support external stop */
+
+                if (current_sim) { simulation_destroy(current_sim); current_sim = NULL; }
+
+                current_sim = simulation_create(width, height, obstacles, K, replications, pu, pd, pl, pr, mode==2, client_sock);
+                if (!current_sim) {
+                    send(client_sock, "ERROR simulation_create\n", 23, 0);
+                    continue;
+                }
+
+                /* spusti jednu simuláciu (vnútri môže bežať viac vlákien na zber štatisík) */
+                simulation_run(current_sim);
+
+                /* pošlite počiatočný pohľad podľa požadovaného módu: ACK najskôr, aby klient prepol lokálny mód */
+                char ack[32];
+                snprintf(ack, sizeof(ack), "MODE %d\n", mode);
+                send(client_sock, ack, strlen(ack), 0);
+
+                if (mode == 1) {
+                    simulation_send_summary(current_sim, client_sock);
+                    send(client_sock, "SUMMARY_DONE\n", strlen("SUMMARY_DONE\n"), 0);
+                } else {
+                    simulation_send_interactive(current_sim, client_sock);
+                }
+
+            } else if (strncmp(buffer, "SET_MODE", 8) == 0) {
+                if (!current_sim) { send(client_sock, "ERROR no_simulation\n", 19, 0); continue; }
+                int newmode = 0;
+                if (sscanf(buffer, "SET_MODE %d", &newmode) == 1 && (newmode == 1 || newmode == 2)) {
+                    /* potvrdenie najprv (ACK), potom pošleme príslušné dáta klientovi */
+                    char ack[32]; snprintf(ack, sizeof(ack), "MODE %d\n", newmode); send(client_sock, ack, strlen(ack), 0);
+
+                    if (newmode == 1) {
+                        simulation_send_summary(current_sim, client_sock);
+                        send(client_sock, "SUMMARY_DONE\n", strlen("SUMMARY_DONE\n"), 0);
+                    } else {
+                        simulation_send_interactive(current_sim, client_sock);
+                    }
+                } else {
+                    send(client_sock, "ERROR invalid_mode\n", 19, 0);
+                }
+            } else if (strncmp(buffer, "STOP_SIM", 8) == 0) {
+                /* príkaz na zastavenie simulácie (tu len potvrdíme, výsledky sú už zabehnuté) */
                 send(client_sock, "STOP_OK\n", 8, 0);
-            }
-            else if (strncmp(buffer, "QUIT", 4) == 0) {
-                printf("Client requested quit.\n");
+            } else if (strncmp(buffer, "QUIT", 4) == 0) {
+                printf("client requested quit\n");
+                close(client_sock);
                 break;
-            }
-            else {
+            } else {
                 send(client_sock, "UNKNOWN_CMD\n", 12, 0);
             }
         }
@@ -86,6 +119,7 @@ int main() {
         close(client_sock);
     }
 
+    if (current_sim) simulation_destroy(current_sim);
     close(server_fd);
     return 0;
 }
