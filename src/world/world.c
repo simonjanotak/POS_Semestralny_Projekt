@@ -1,5 +1,7 @@
 #include "world.h"
+#include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 World* world_create(int width, int height, WorldType type) {
     World* w = malloc(sizeof(World));
@@ -28,10 +30,12 @@ void world_destroy(World* w) {
 }
 
 int world_is_obstacle(World* w, int x, int y) {
-    if (w->type == WORLD_NO_OBSTACLES)
-        return 0;
-
-    return w->cells[y][x];
+    if (!w) return 0;
+    /* ak svet bez prekážok -> nikdy prekážka */
+    if (w->type == WORLD_NO_OBSTACLES) return 0;
+    /* zabezpečiť, že štart (0,0) je vždy voľný */
+    if (x == 0 && y == 0) return 0;
+    return (w->cells[y][x] != 0) ? 1 : 0;
 }
 void world_wrap(World* w, int *x, int *y) {
     if (*x < 0) *x = w->width - 1;
@@ -43,23 +47,31 @@ void read_file_with_obstacles(World* w, const char* filename) {
     FILE* file = fopen(filename, "r");
     if (!file) return;
 
-    for (int y = 0; y < w->height; y++) {
-        for (int x = 0; x < w->width; x++) {
+    int x = 0, y = 0;
+    int c;
+    while ((c = fgetc(file)) != EOF && y < w->height) {
+        if (c == '0' || c == '1') {
+            w->cells[y][x] = (c == '1') ? 1 : 0;
+            x++;
+            if (x >= w->width) { x = 0; y++; }
+            continue;
+        }
+
+        if (c == '-' || isdigit(c)) {
+            ungetc(c, file);
             int val;
             if (fscanf(file, "%d", &val) == 1) {
-                w->cells[y][x] = val;
+                w->cells[y][x] = (val != 0) ? 1 : 0;
+                x++;
+                if (x >= w->width) { x = 0; y++; }
+                continue;
+            } else {
+                fgetc(file);
             }
-        }
+        } 
     }
 
     fclose(file);
-    printf("Loaded world:\n");
-    for (int y = 0; y < w->height; y++) {
-        for (int x = 0; x < w->width; x++) {
-            printf("%d ", w->cells[y][x]);
-        }
-    printf("\n");
-    }
 }
 void world_generate_obstacles(World* w, int count) {
     if (w->type != WORLD_WITH_OBSTACLES)

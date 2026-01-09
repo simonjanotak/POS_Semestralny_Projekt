@@ -19,7 +19,7 @@ static char *safe_strdup(const char *s) {
 
 static void send_summary_line(int client_socket, int x, int y, double average_steps, double probability) {
     char message[128];
-    snprintf(message, sizeof(message), "SUMMARY %d %d %.3f %.3f\n", x, y, average_steps, probability);
+    snprintf(message, sizeof(message), "SUMMARY %d %d %.3f %.3f\n", x, y, average_steps, probability * 100);
     send(client_socket, message, strlen(message), 0);
 }
 
@@ -128,25 +128,46 @@ static void *cell_worker(void *arg_void) {
             pthread_mutex_unlock(arg->send_mutex);
         }
 
-        for (steps_taken = 0; steps_taken < K; steps_taken++) {
+        steps_taken = 0;
+        while (steps_taken < K) {
             if (atomic_load(&sim->stop_requested)) { break; }
             if (arg->rand_mutex) pthread_mutex_lock(arg->rand_mutex);
-            walker_step(&walker, sim->world, sim->p_up, sim->p_down, sim->p_left, sim->p_right);
+            int moved = walker_step(&walker, sim->world, sim->p_up, sim->p_down, sim->p_left, sim->p_right);
             if (arg->rand_mutex) pthread_mutex_unlock(arg->rand_mutex);
 
-            char piece[64];
-            snprintf(piece, sizeof(piece), "%d %d\n", walker.x, walker.y);
-            strncat(traj_buf, piece, sizeof(traj_buf) - strlen(traj_buf) - 1);
+            if (moved) {
+                steps_taken++;
+                char piece[64];
+                snprintf(piece, sizeof(piece), "%d %d\n", walker.x, walker.y);
+                strncat(traj_buf, piece, sizeof(traj_buf) - strlen(traj_buf) - 1);
 
-            /* ak je povolené interaktívne, pošli pozíciu */
-            if (sim->interactive && sim->client_sock >= 0) {
-                char posmsg[64]; snprintf(posmsg, sizeof(posmsg), "POS %d %d\n", walker.x, walker.y);
-                pthread_mutex_lock(arg->send_mutex);
-                send(sim->client_sock, posmsg, strlen(posmsg), 0);
-                pthread_mutex_unlock(arg->send_mutex);
+                /* ak je povolené interaktívne, pošli pozíciu */
+                if (sim->interactive && sim->client_sock >= 0) {
+                    char posmsg[64]; snprintf(posmsg, sizeof(posmsg), "POS %d %d\n", walker.x, walker.y);
+                    pthread_mutex_lock(arg->send_mutex);
+                    send(sim->client_sock, posmsg, strlen(posmsg), 0);
+                    pthread_mutex_unlock(arg->send_mutex);
+                }
+
+                if (walker.x == 0 && walker.y == 0) { hit_center = 1; break; }
+            } else {
+                /* no move occurred; check if any adjacent cell is free - if none, count this as a wasted step */
+                int any_free = 0;
+                int tx, ty;
+
+                tx = walker.x; ty = walker.y - 1; world_wrap(sim->world, &tx, &ty); if (!world_is_obstacle(sim->world, tx, ty)) any_free = 1;
+                tx = walker.x; ty = walker.y + 1; world_wrap(sim->world, &tx, &ty); if (!world_is_obstacle(sim->world, tx, ty)) any_free = 1;
+                tx = walker.x - 1; ty = walker.y; world_wrap(sim->world, &tx, &ty); if (!world_is_obstacle(sim->world, tx, ty)) any_free = 1;
+                tx = walker.x + 1; ty = walker.y; world_wrap(sim->world, &tx, &ty); if (!world_is_obstacle(sim->world, tx, ty)) any_free = 1;
+
+                if (!any_free) {
+                    /* walker is enclosed by obstacles — consume one step */
+                    steps_taken++;
+                } else {
+                    /* there are free neighbours; retry without consuming a step */
+                    continue;
+                }
             }
-
-            if (walker.x == 0 && walker.y == 0) { hit_center = 1; break; }
         }
 
         if (hit_center) {

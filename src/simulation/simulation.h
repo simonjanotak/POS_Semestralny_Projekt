@@ -5,6 +5,7 @@
 #include "../world/world.h"
 #include "../walker/walker.h"
 #include <stdatomic.h>
+#include <pthread.h>
 
 typedef struct {
     World* world;
@@ -18,6 +19,8 @@ typedef struct {
     int *success_counts;     /* length = width*height */
     char **representative_traj; /* per-cell stored trajectory strings */
     atomic_int stop_requested;  /* set to non-zero to request run stop */
+    pthread_mutex_t send_mutex; /* ochrana pri send() */
+    pthread_mutex_t rand_mutex; /* ochrana pri volaní rand() */
 } Simulation;
 
 Simulation* simulation_create(int width, int height, int type,

@@ -8,6 +8,7 @@ typedef struct {
     int y;
 } Walker;
 
-void walker_step(Walker* w, World* wolrd,float up, float down, float left, float right);
+/* Perform a single move attempt. Returns 1 if the walker moved, 0 if it stayed. */
+int walker_step(Walker* w, World* world, float p_up, float p_down, float p_left, float p_right);
 void walker_init(Walker* w, int start_x, int start_y);
 #endif

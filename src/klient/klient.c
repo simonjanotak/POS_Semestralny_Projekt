@@ -48,6 +48,44 @@ int connect_to_server() {
 
     return sock;
 }
+//AI metoda na zistenie rozmerov mapy z fileu
+void calculate_map_size(const char* filename, int* out_width, int* out_height) {
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        perror("fopen");
+        *out_width = 0;
+        *out_height = 0;
+        return;
+    }
+
+    int width = 0;
+    int height = 0;
+    int current_width = 0;
+    int c;
+
+    while ((c = fgetc(file)) != EOF) {
+        if (c == '0' || c == '1') {
+            current_width++;
+        } else if (c == '\n') {
+            if (current_width > width) {
+                width = current_width;
+            }
+            current_width = 0;
+            height++;
+        }
+    }
+    // Check for last line without newline
+    if (current_width > 0) {
+        if (current_width > width) {
+            width = current_width;
+        }
+        height++;
+    }
+
+    fclose(file);
+    *out_width = width;
+    *out_height = height;
+}
 
 // AI  - spracude správy zo servera a vypíše ich na obrazovku
 void process_server(int sock, int world_width, int world_height, int mod, int **obstacles_map) {
@@ -194,19 +232,26 @@ int main() {
         int obstacles, mode;
         float p_up, p_down, p_left, p_right;
         char filename[128];
-       
 
-        printf("Enter world width: "); scanf("%d", &width);
-        printf("Enter world height: "); scanf("%d", &height);
-        printf("Enter maximum steps K: "); scanf("%d", &K);
-        printf("Enter number of replications: "); scanf("%d", &replications);
-        printf("Add obstacles? (0=no,1=yes): "); scanf("%d", &obstacles);
+       printf("Add obstacles? (0=no,1=yes): "); scanf("%d", &obstacles);
         if (obstacles == 1) {
             printf("Enter file with obstacles: ");
-            scanf(" %127s", obstacles_filename);
+            scanf("%127s", obstacles_filename);
+            strncpy(obstacles_filename, "/mnt/c/Users/simon/mapa.txt", sizeof(obstacles_filename)-1);
+            obstacles_filename[sizeof(obstacles_filename)-1] = '\0';
         } else {
             obstacles_filename[0] = '\0';
         }
+        if(obstacles == 0) {
+        printf("Enter world width: "); scanf("%d", &width);
+        printf("Enter world height: "); scanf("%d", &height);
+        } else {
+            calculate_map_size(obstacles_filename, &width, &height);
+        }
+
+        printf("Enter maximum steps K: "); scanf("%d", &K);
+        printf("Enter number of replications: "); scanf("%d", &replications);
+        
         printf("Enter the mode you want 1=summary, 2=innteractive ");scanf("%d", &mode);
         printf("Enter movement probabilities (up down left right), sum=1.0: \n");
         scanf("%f %f %f %f", &p_up, &p_down, &p_left, &p_right);
