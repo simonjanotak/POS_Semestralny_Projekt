@@ -8,6 +8,11 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
+/* =========================
+   Pomocné interné funkcie
+   ========================= */
+
+/* Nápad AI Chat gpt - Bezpečná verzia strdup, ktorá alokuje a skopíruje string */
 static char *safe_strdup(const char *s) {
     if (!s) return NULL;
     size_t l = strlen(s) + 1;
@@ -17,17 +22,40 @@ static char *safe_strdup(const char *s) {
     return d;
 }
 
-static void send_summary_line(int client_socket, int x, int y, double average_steps, double probability) {
+/* AI Chat GPT - Thread-safe send: posielanie dát klientovi.
+   Ak send zlyhá, označí sim->client_sock = -1, aby sa prestalo posielať */
+static ssize_t safe_send(Simulation *sim, const char *buf, size_t len) {
+    if (!sim) return -1;
+    ssize_t res = -1;
+    pthread_mutex_lock(&sim->send_mutex); // zámok kvôli viacerým vláknam
+    if (sim->client_sock >= 0) {
+        res = send(sim->client_sock, buf, len, 0);
+        if (res <= 0) {
+            /* klient sa pravdepodobne odpojil; socket označíme neplatným */
+            sim->client_sock = -1;
+        }
+    }
+    pthread_mutex_unlock(&sim->send_mutex);
+    return res;
+}
+
+/* Pošli jednu riadok sumarizácie výsledkov */
+static int send_summary_line(Simulation *sim, int x, int y, double average_steps, double probability) {
     char message[128];
     snprintf(message, sizeof(message), "SUMMARY %d %d %.3f %.3f\n", x, y, average_steps, probability * 100);
-    send(client_socket, message, strlen(message), 0);
+    return safe_send(sim, message, strlen(message)) > 0 ? 0 : -1;
 }
 
-static void send_obstacle_as_summary(int client_socket, int x, int y) {
-    send_summary_line(client_socket, x, y, -1.0, 0.0);
+/* Ak je políčko prekážkou, pošli ho ako summary */
+static void send_obstacle_as_summary(Simulation *sim, int x, int y) {
+    send_summary_line(sim, x, y, -1.0, 0.0);
 }
 
-/* Vytvorenie a zničenie simulácie */
+/* =========================
+   Vytvorenie a zničenie simulácie
+   ========================= */
+
+/* Vytvorí štruktúru simulácie a alokuje všetky potrebné polia */
 Simulation* simulation_create(int width, int height, int world_type,
                               int max_steps, int replications,
                               float prob_up, float prob_down, float prob_left, float prob_right,
@@ -69,20 +97,28 @@ Simulation* simulation_create(int width, int height, int world_type,
     return sim;
 }
 
+/* Zrušenie simulácie a uvoľnenie všetkých alokovaných polí */
 void simulation_destroy(Simulation* sim) {
     if (!sim) return;
+
     if (sim->representative_traj) {
         int cells = sim->world ? sim->world->width * sim->world->height : 0;
         int total = cells * (sim->replications > 0 ? sim->replications : 1);
-        for (int i = 0; i < total; ++i) if (sim->representative_traj[i]) free(sim->representative_traj[i]);
+        for (int i = 0; i < total; ++i)
+            if (sim->representative_traj[i]) free(sim->representative_traj[i]);
         free(sim->representative_traj);
     }
+
     if (sim->sum_steps) free(sim->sum_steps);
     if (sim->success_counts) free(sim->success_counts);
     if (sim->world) world_destroy(sim->world);
     pthread_mutex_destroy(&sim->send_mutex);
     free(sim);
 }
+
+/* =========================
+   Vlákna pre výpočet jednej bunky
+   ========================= */
 
 /* Argumenty vlákna pre spracovanie jedného štartovacieho políčka */
 typedef struct {
@@ -92,10 +128,11 @@ typedef struct {
     int index;              /* index = y * width + x */
     int max_steps;
     int replications;
-    pthread_mutex_t *rand_mutex; /* chráni nepružné (ne-thread-safe) volanie RNG vo walker_step */
-    pthread_mutex_t *send_mutex; /* zamykanie pri send() */
+    pthread_mutex_t *rand_mutex; /* chráni globálne RNG */
+    pthread_mutex_t *send_mutex; /* chráni send() */
 } CellWorkerArg;
-/* Funkcia vlákna: vykoná všetky replikácie z jedného štartu a uloží výsledky do polí v `sim` */
+
+/* Funkcia vlákna: vykoná všetky replikácie z jedného štartu a uloží výsledky */
 static void *cell_worker(void *arg_void) {
     CellWorkerArg *arg = (CellWorkerArg*)arg_void;
     Simulation *sim = arg->sim;
@@ -110,27 +147,27 @@ static void *cell_worker(void *arg_void) {
     for (int r = 0; r < reps; r++) {
         /* ak bol požiadaný stop, skonči replikácie */
         if (atomic_load(&sim->stop_requested)) break;
+
         Walker walker;
         walker_init(&walker, start_x, start_y);
         int hit_center = 0;
         int steps_taken = 0;
 
-        /* vytvoriť reťazec trajektórie pre túto jednu replikáciu */
+        /* buffer pre trajektóriu */
         char traj_buf[8192];
         traj_buf[0] = '\0';
 
-        /* ak je povolené interaktívne streamovanie, pošli START pred krokmi */
+        /* START správa pre interaktívny mód */
         if (sim->interactive && sim->client_sock >= 0) {
             char startmsg[128];
             snprintf(startmsg, sizeof(startmsg), "START %d %d %d\n", start_x, start_y, r+1);
-            pthread_mutex_lock(arg->send_mutex);
-            send(sim->client_sock, startmsg, strlen(startmsg), 0);
-            pthread_mutex_unlock(arg->send_mutex);
+            safe_send(sim, startmsg, strlen(startmsg));
         }
 
-        steps_taken = 0;
+        /* simulácia krokov walkera */
         while (steps_taken < K) {
-            if (atomic_load(&sim->stop_requested)) { break; }
+            if (atomic_load(&sim->stop_requested)) break;
+
             if (arg->rand_mutex) pthread_mutex_lock(arg->rand_mutex);
             int moved = walker_step(&walker, sim->world, sim->p_up, sim->p_down, sim->p_left, sim->p_right);
             if (arg->rand_mutex) pthread_mutex_unlock(arg->rand_mutex);
@@ -141,17 +178,17 @@ static void *cell_worker(void *arg_void) {
                 snprintf(piece, sizeof(piece), "%d %d\n", walker.x, walker.y);
                 strncat(traj_buf, piece, sizeof(traj_buf) - strlen(traj_buf) - 1);
 
-                /* ak je povolené interaktívne, pošli pozíciu */
+                /* interaktívny mód – pošli pozíciu */
                 if (sim->interactive && sim->client_sock >= 0) {
-                    char posmsg[64]; snprintf(posmsg, sizeof(posmsg), "POS %d %d\n", walker.x, walker.y);
-                    pthread_mutex_lock(arg->send_mutex);
-                    send(sim->client_sock, posmsg, strlen(posmsg), 0);
-                    pthread_mutex_unlock(arg->send_mutex);
+                    char posmsg[64];
+                    snprintf(posmsg, sizeof(posmsg), "POS %d %d\n", walker.x, walker.y);
+                    safe_send(sim, posmsg, strlen(posmsg));
                 }
 
+                /* ak dosiahol stred, ukonči */
                 if (walker.x == 0 && walker.y == 0) { hit_center = 1; break; }
             } else {
-                /* no move occurred; check if any adjacent cell is free - if none, count this as a wasted step */
+                /* walker sa nepohol – skontroluj voľné susedné bunky */
                 int any_free = 0;
                 int tx, ty;
 
@@ -160,33 +197,28 @@ static void *cell_worker(void *arg_void) {
                 tx = walker.x - 1; ty = walker.y; world_wrap(sim->world, &tx, &ty); if (!world_is_obstacle(sim->world, tx, ty)) any_free = 1;
                 tx = walker.x + 1; ty = walker.y; world_wrap(sim->world, &tx, &ty); if (!world_is_obstacle(sim->world, tx, ty)) any_free = 1;
 
-                if (!any_free) {
-                    /* walker is enclosed by obstacles — consume one step */
-                    steps_taken++;
-                } else {
-                    /* there are free neighbours; retry without consuming a step */
-                    continue;
-                }
+                if (!any_free) steps_taken++; /* uzavretý walker – spotrebuje krok */
+                else continue; /* voľné susedné bunky – retry bez kroku */
             }
         }
 
+        /* update úspechov a sumy krokov */
         if (hit_center) {
             successes++;
             steps_sum += (double)steps_taken;
         }
 
-        /* ak je povolené interaktívne streamovanie, pošli END teraz (posledná pozícia už bola poslaná) */
+        /* END správa pre interaktívny mód */
         if (sim->interactive && sim->client_sock >= 0) {
-            char endmsg[64]; snprintf(endmsg, sizeof(endmsg), "END %d %d\n", steps_taken, hit_center);
-            pthread_mutex_lock(arg->send_mutex);
-            send(sim->client_sock, endmsg, strlen(endmsg), 0);
-            pthread_mutex_unlock(arg->send_mutex);
+            char endmsg[64];
+            snprintf(endmsg, sizeof(endmsg), "END %d %d\n", steps_taken, hit_center);
+            safe_send(sim, endmsg, strlen(endmsg));
         }
 
-        /* uložiť trajektóriu pre túto replikáciu (slot = idx * reps + r) */
+        /*  AI Copilot - uloženie trajektórie do representative_traj */
         int slot = idx * reps + r;
         if (traj_buf[0] != '\0') sim->representative_traj[slot] = safe_strdup(traj_buf);
-        else sim->representative_traj[slot] = safe_strdup(""); /* store empty string if no moves */
+        else sim->representative_traj[slot] = safe_strdup(""); /* prázdna trajektória */
     }
 
     sim->success_counts[idx] = successes;
@@ -194,15 +226,19 @@ static void *cell_worker(void *arg_void) {
     return NULL;
 }
 
-/* Spusti jednu simuláciu: vytvorí vlákno pre každé štartovacie políčko, vyplní sum_steps, success_counts a representative_traj */
+/* =========================
+   Spustenie celej simulácie
+   ========================= */
+
+/* Vytvorí vlákno pre každú bunku a spracuje všetky replikácie */
 void simulation_run(Simulation* sim) {
     if (!sim || !sim->world) return;
+
     int width = sim->world->width;
     int height = sim->world->height;
     int cell_count = width * height;
     int reps = sim->replications;
 
-    /* mutex pre ochranu volania RNG, ak walker_step používa globálny rand() */
     pthread_mutex_t rand_mutex;
     pthread_mutex_init(&rand_mutex, NULL);
 
@@ -219,7 +255,9 @@ void simulation_run(Simulation* sim) {
         for (int x = 0; x < width; ++x) {
             int idx = y * width + x;
             if (world_is_obstacle(sim->world, x, y)) continue;
-            if (x == 0 && y == 0) { /* stredové políčko: úspech pre všetky replikácie a uložiť jednoduché trajektórie */
+
+            if (x == 0 && y == 0) {
+                /* stredové políčko – úspech pre všetky replikácie */
                 sim->success_counts[idx] = sim->replications;
                 sim->sum_steps[idx] = 0.0;
                 for (int r = 0; r < reps; ++r) {
@@ -239,13 +277,14 @@ void simulation_run(Simulation* sim) {
             args[thread_count].send_mutex = &sim->send_mutex;
 
             if (pthread_create(&threads[thread_count], NULL, cell_worker, &args[thread_count]) != 0) {
-                /* ak sa vlákno nevytvorí, vykonaj úlohu v hlavnom vlákne ako záložnú možnosť */
+                /*AI nápad -  ak vlákno nevznikne, vykonaj úlohu v hlavnom vlákne  */
                 cell_worker(&args[thread_count]);
             }
             thread_count++;
         }
     }
 
+    /* počkaj na dokončenie všetkých vlákien */
     for (int i = 0; i < thread_count; ++i) pthread_join(threads[i], NULL);
 
     free(threads);
@@ -253,16 +292,20 @@ void simulation_run(Simulation* sim) {
     pthread_mutex_destroy(&rand_mutex);
 }
 
-/* Pošli uloženú reprezentatívnu trajektóriu ako START/POS/END pre danú replikáciu */
-static void send_representative_trajectory_rep(int client_sock, int start_x, int start_y, const char *traj_str, int replication_id) {
+/* =========================
+   Odoslanie interaktívnych trajektórií
+   ========================= */
+
+/*AI - GitHub Copilot Posielanie trajektórie pre jednu replikáciu */
+static void send_representative_trajectory_rep(Simulation *sim, int start_x, int start_y, const char *traj_str, int replication_id) {
     char buf[128];
     snprintf(buf, sizeof(buf), "START %d %d %d\n", start_x, start_y, replication_id);
-    send(client_sock, buf, strlen(buf), 0);
+    safe_send(sim, buf, strlen(buf));
 
     if (!traj_str || traj_str[0] == '\0') {
-        /* žiadny pohyb nebol zaznamenaný */
+        /* žiadny pohyb */
         snprintf(buf, sizeof(buf), "END %d %d\n", 0, 0);
-        send(client_sock, buf, strlen(buf), 0);
+        safe_send(sim, buf, strlen(buf));
         return;
     }
 
@@ -274,7 +317,7 @@ static void send_representative_trajectory_rep(int client_sock, int start_x, int
         int consumed = 0;
         if (sscanf(p, "%d %d%n", &nx, &ny, &consumed) == 2 && consumed > 0) {
             snprintf(buf, sizeof(buf), "POS %d %d\n", nx, ny);
-            send(client_sock, buf, strlen(buf), 0);
+            safe_send(sim, buf, strlen(buf));
             last_x = nx; last_y = ny;
             steps++;
             p += consumed;
@@ -283,11 +326,11 @@ static void send_representative_trajectory_rep(int client_sock, int start_x, int
     }
     int hit_center = (last_x == 0 && last_y == 0) ? 1 : 0;
     snprintf(buf, sizeof(buf), "END %d %d\n", steps, hit_center);
-    send(client_sock, buf, strlen(buf), 0);
+    safe_send(sim, buf, strlen(buf));
 }
 
-/* exportované: pošli interaktívny pohľad (všetky replikácie) */
-void simulation_send_interactive(Simulation *sim, int client_sock) {
+/* AI - GitHub Copilot Odoslanie interaktívnych dát všetkých replikácií */
+void simulation_send_interactive(Simulation *sim) {
     if (!sim || !sim->world) return;
     int width = sim->world->width;
     int height = sim->world->height;
@@ -299,14 +342,14 @@ void simulation_send_interactive(Simulation *sim, int client_sock) {
             for (int r = 0; r < reps; ++r) {
                 int slot = idx * reps + r;
                 const char *traj = sim->representative_traj[slot];
-                send_representative_trajectory_rep(client_sock, x, y, traj, r+1);
+                send_representative_trajectory_rep(sim, x, y, traj, r+1);
             }
         }
     }
 }
 
-/* exportované: pošli sumarizáciu výsledkov */
-void simulation_send_summary(Simulation *sim, int client_sock) {
+/* AI - GitHub Copilot Odoslanie sumarizácie výsledkov (bez interaktívneho streamovania) */
+void simulation_send_summary(Simulation *sim) {
     if (!sim || !sim->world) return;
     int width = sim->world->width;
     int height = sim->world->height;
@@ -315,17 +358,17 @@ void simulation_send_summary(Simulation *sim, int client_sock) {
         for (int x = 0; x < width; ++x) {
             int idx = y * width + x;
             if (world_is_obstacle(sim->world, x, y)) {
-                send_obstacle_as_summary(client_sock, x, y);
+                send_obstacle_as_summary(sim, x, y);
                 continue;
             }
             if (x == 0 && y == 0) {
-                send_summary_line(client_sock, x, y, 0.0, 1.0);
+                send_summary_line(sim, x, y, 0.0, 1.0);
                 continue;
             }
             double avg = -1.0;
             if (sim->success_counts[idx] > 0) avg = sim->sum_steps[idx] / (double)sim->success_counts[idx];
             double prob = (double)sim->success_counts[idx] / (double)reps;
-            send_summary_line(client_sock, x, y, avg, prob);
+            send_summary_line(sim, x, y, avg, prob);
         }
     }
 }

@@ -30,8 +30,8 @@ Simulation* simulation_create(int width, int height, int type,
 
 void simulation_destroy(Simulation* sim);
 void simulation_run(Simulation* sim);
-/* send stored results to a client socket */
-void simulation_send_summary(Simulation *sim, int client_sock);
-void simulation_send_interactive(Simulation *sim, int client_sock);
+
+void simulation_send_summary(Simulation *sim);
+void simulation_send_interactive(Simulation *sim);
 
 #endif

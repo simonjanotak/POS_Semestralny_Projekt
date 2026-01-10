@@ -2,64 +2,75 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+/* -------------------------
+   Inicializácia chodca
+   -------------------------
+   Nastaví počiatočné súradnice chodca
+*/
 void walker_init(Walker* w, int start_x, int start_y) {
     w->x = start_x;
     w->y = start_y;
 }
 
-
-
-//zmena kroku chodca s ohľadom na prekážky a pravdepodobnosti
+/* -------------------------
+    Čiastočne upravy od AI GitHub Copilot
+   Vykoná jeden krok chodca
+   - zohľadňuje prekážky a pravdepodobnosti pohybu
+   - vráti 1, ak sa chodcovi podarilo pohnúť
+   - vráti 0, ak všetky smery blokované (zostane na mieste)
+   ------------------------- */
 int walker_step(Walker* w, World* world,
                  float p_up, float p_down,
                  float p_left, float p_right) {
 
-    /* Sample a move direction without replacement according to provided probabilities.
-       If the chosen target is an obstacle, try other directions until a free cell
-       is found or all directions are exhausted. */
+    /* uložíme pravdepodobnosti a indexy smerov: 0=up,1=down,2=left,3=right */
     float probs[4] = { p_up, p_down, p_left, p_right };
     int dirs[4] = {0,1,2,3};
-    bool tried[4] = {false,false,false,false};
+    bool tried[4] = {false,false,false,false}; // ktoré smery sme už skúšali
 
     for (int attempt = 0; attempt < 4; ++attempt) {
-        /* compute sum of remaining weights */
+        /* spočítame súčet ešte nevyskúšaných váh */
         float sum = 0.0f;
-        for (int i = 0; i < 4; ++i) if (!tried[i]) sum += probs[i];
-        if (sum <= 0.0f) break; /* no remaining moves with positive weight */
+        for (int i = 0; i < 4; ++i)
+            if (!tried[i]) sum += probs[i];
+        if (sum <= 0.0f) break; /* žiadny dostupný smer s kladnou pravdepodobnosťou */
 
+        /* náhodný výber smeru podľa pravdepodobnosti */
         float r = ((float)rand() / RAND_MAX) * sum;
         int chosen = -1;
         float acc = 0.0f;
         for (int i = 0; i < 4; ++i) {
-            if (tried[i]) continue;
+            if (tried[i]) continue; // tento smer už bol skúšaný
             acc += probs[i];
-            if (r <= acc) { chosen = i; break; }
+            if (r <= acc) { chosen = i; break; } // vybraný smer
         }
         if (chosen == -1) {
-            /* fallback to first available */
-            for (int i = 0; i < 4; ++i) if (!tried[i]) { chosen = i; break; }
+            /* fallback: zober prvý dostupný smer */
+            for (int i = 0; i < 4; ++i) 
+                if (!tried[i]) { chosen = i; break; }
         }
 
-        /* compute candidate position */
+        /* vypočítame kandidátsku pozíciu */
         int nx = w->x;
         int ny = w->y;
-        if (chosen == 0) ny--;       /* up */
-        else if (chosen == 1) ny++;  /* down */
-        else if (chosen == 2) nx--;  /* left */
-        else if (chosen == 3) nx++;  /* right */
+        if (chosen == 0) ny--;       /* hore */
+        else if (chosen == 1) ny++;  /* dole */
+        else if (chosen == 2) nx--;  /* vľavo */
+        else if (chosen == 3) nx++;  /* vpravo */
 
-        world_wrap(world, &nx, &ny);
+        world_wrap(world, &nx, &ny); // ošetrenie hraníc sveta (wrap-around)
 
+        /* ak cieľová bunka nie je prekážka, chodca premiestnime */
         if (!world_is_obstacle(world, nx, ny)) {
             w->x = nx;
             w->y = ny;
-            return 1;
+            return 1; // pohyb úspešný
         }
 
-        /* mark this direction as tried and loop to pick another */
+        /* ak bunka je prekážka, označíme tento smer ako skúšaný a pokračujeme */
         tried[chosen] = true;
     }
-    /* no valid move found (all neighbours blocked or zero-weight) -> stay in place */
+
+    /* žiadny dostupný pohyb: všetky susedné bunky blokované -> zostane na mieste */
     return 0;
 }
-

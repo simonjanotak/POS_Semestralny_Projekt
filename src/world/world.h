@@ -11,7 +11,7 @@ typedef struct {
     int width;
     int height;
     WorldType type;
-    int **cells;   // 0 = free, 1 = obstacle
+    int **cells;   // 0 = volne, 1 = prekazka
 } World;
 
 /* vytvorenie / zrušenie */
