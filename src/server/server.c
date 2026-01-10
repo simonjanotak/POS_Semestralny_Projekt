@@ -10,7 +10,7 @@
 #include "../simulation/simulation.h"
 
 #define PORT 12345
-#define MAX_CLIENTS 5
+#define MAX_CLIENTS 1
 #define MAX_BUFFER 1024
 
 int main() {

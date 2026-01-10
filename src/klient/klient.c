@@ -6,6 +6,8 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <stdbool.h>
 #define PORT 12345
 #define MAX_BUFFER 1024
@@ -29,24 +31,54 @@ void print_main_menu() {
 int connect_to_server() {
     int sock;
     struct sockaddr_in serv_addr;
+    int attempts = 5;
+    for (int a = 0; a < attempts; ++a) {
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            perror("socket");
+            return -1;
+        }
 
-    sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        perror("socket");
-        return -1;
-    }
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(PORT);
+        inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
 
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
-    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) == 0) {
+            return sock;
+        }
 
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("connect");
         close(sock);
-        return -1;
+        if (a < attempts - 1) {
+            sleep(1); /* wait for server to start */
+        }
     }
 
-    return sock;
+    /* final attempt failed */
+    return -1;
+}
+
+/* AI Metoda */
+int spawn_server() {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
+    if (pid == 0) {
+        /* child */
+        /* try common relative/system paths for the server binary */
+        execl("./server", "server", NULL);
+        execl("../server/server", "server", NULL);
+        execl("/usr/local/bin/server", "server", NULL);
+        execl("/usr/bin/server", "server", NULL);
+        perror("execl server");
+        _exit(127);
+    }
+    /* parent: avoid zombie children */
+    signal(SIGCHLD, SIG_IGN);
+    /* give server a moment to bind/listen */
+    sleep(1);
+    return pid;
 }
 //AI metoda na zistenie rozmerov mapy z fileu
 void calculate_map_size(const char* filename, int* out_width, int* out_height) {
@@ -88,7 +120,7 @@ void calculate_map_size(const char* filename, int* out_width, int* out_height) {
 }
 
 // AI  - spracude správy zo servera a vypíše ich na obrazovku
-void process_server(int sock, int world_width, int world_height, int mod, int **obstacles_map) {
+void process_server(int sock, int world_width, int world_height, int mod) {
     char buffer[MAX_BUFFER];
     char recv_accum[8192];
     int accum_len = 0;
@@ -158,12 +190,6 @@ void process_server(int sock, int world_width, int world_height, int mod, int **
                 if (strncmp(line, "MODE", 4) == 0) {
                     int server_mode = 0; if (sscanf(line, "MODE %d", &server_mode) == 1) { mod = server_mode; printf("Mode switched to %d by server\n", mod); }
                 }
-                else if (strncmp(line, "OBSTACLE", 8) == 0 && obstacles_map) {
-                    int x,y; if (sscanf(line, "OBSTACLE %d %d", &x, &y) == 2) { if (x>=0 && x<world_width && y>=0 && y<world_height) obstacles_map[y][x]=1; }
-                }
-                else if (strncmp(line, "OBSTACLE_END", 12) == 0) {
-                    printf("All obstacles received.\n");
-                }
                 else if (strncmp(line, "SUMMARY", 7) == 0) {
                     int x,y; double avg, prob; if (sscanf(line, "SUMMARY %d %d %lf %lf", &x, &y, &avg, &prob) >= 4) {
                         printf("Cell (%d,%d): avg=", x, y);
@@ -212,7 +238,6 @@ int main() {
     int current_start_y = 0;
     int current_rep = 0;
     int steps = 0;
-    int** obstacles_map = NULL;
     int world_height, world_width, obstacles;
     char buffer[MAX_BUFFER];
     int mod;
@@ -224,73 +249,69 @@ int main() {
         scanf("%d", &choice);
         getchar(); // odstráni enter po scanf
 
-        if (choice == 1) {
-        sock = connect_to_server();   //  ulož výsledok
-        if (sock < 0) continue;       // ak sa nepripojil, vráť sa späť do menu
+        if (choice == 1 || choice == 2) {
+            if (choice == 1) {
+                /* spawn local server for New Simulation */
+                if (spawn_server() < 0) {
+                    printf("Warning: failed to spawn local server; will still try to connect.\n");
+                }
+            }
 
-        int width, height, K, replications;
-        int obstacles, mode;
-        float p_up, p_down, p_left, p_right;
-        char filename[128];
+            sock = connect_to_server();   //  ulož výsledok
+            if (sock < 0) { printf("Could not connect to server.\n"); continue; }
 
-       printf("Add obstacles? (0=no,1=yes): "); scanf("%d", &obstacles);
-        if (obstacles == 1) {
-            printf("Enter file with obstacles: ");
-            scanf("%127s", obstacles_filename);
-            strncpy(obstacles_filename, "/mnt/c/Users/simon/mapa.txt", sizeof(obstacles_filename)-1);
-            obstacles_filename[sizeof(obstacles_filename)-1] = '\0';
-        } else {
-            obstacles_filename[0] = '\0';
-        }
-        if(obstacles == 0) {
-        printf("Enter world width: "); scanf("%d", &width);
-        printf("Enter world height: "); scanf("%d", &height);
-        } else {
-            calculate_map_size(obstacles_filename, &width, &height);
-        }
+            int width, height, K, replications;
+            int obstacles, mode;
+            float p_up, p_down, p_left, p_right;
+            char filename[128];
 
-        printf("Enter maximum steps K: "); scanf("%d", &K);
-        printf("Enter number of replications: "); scanf("%d", &replications);
-        
-        printf("Enter the mode you want 1=summary, 2=innteractive ");scanf("%d", &mode);
-        printf("Enter movement probabilities (up down left right), sum=1.0: \n");
-        scanf("%f %f %f %f", &p_up, &p_down, &p_left, &p_right);
-        getchar();
-        printf("Enter output file name: "); fgets(filename, sizeof(filename), stdin);
-        filename[strcspn(filename, "\n")] = 0;
+           printf("Add obstacles? (0=no,1=yes): "); scanf("%d", &obstacles);
+            if (obstacles == 1) {
+                printf("Enter file with obstacles: ");
+                scanf("%127s", obstacles_filename);
+                 strncpy(obstacles_filename, "/mnt/c/Users/simon/mapa.txt", sizeof(obstacles_filename)-1);
+                 obstacles_filename[sizeof(obstacles_filename)-1] = '\0';
+            } else {
+                obstacles_filename[0] = '\0';
+            }
+            if(obstacles == 0) {
+                printf("Enter world width: "); scanf("%d", &width);
+                printf("Enter world height: "); scanf("%d", &height);
+            } else {
+                calculate_map_size(obstacles_filename, &width, &height);
+            }
 
-           /* send obstacles filename (or empty string) as last token */
-           snprintf(buffer, sizeof(buffer),
-               "NEW_SIM %d %d %d %d %d %d %.2f %.2f %.2f %.2f %127s\n",
-               width, height, K, replications, obstacles, mode,
-               p_up, p_down, p_left, p_right, obstacles_filename);
+            printf("Enter maximum steps K: "); scanf("%d", &K);
+            printf("Enter number of replications: "); scanf("%d", &replications);
+            
+            printf("Enter the mode you want 1=summary, 2=innteractive ");scanf("%d", &mode);
+            printf("Enter movement probabilities (up down left right), sum=1.0: \n");
+            scanf("%f %f %f %f", &p_up, &p_down, &p_left, &p_right);
+            while((p_up + p_down + p_left + p_right) != 1.0) {
+                printf("Probabilities must sum to 1.0. Please re-enter:\n");
+                scanf("%f %f %f %f", &p_up, &p_down, &p_left, &p_right);
+            }
+            getchar();
+            printf("Enter output file name: "); fgets(filename, sizeof(filename), stdin);
+            filename[strcspn(filename, "\n")] = 0;
 
-        send(sock, buffer, strlen(buffer), 0);
-        mod = mode;
-        world_height = height;
-        world_width = width;
-        printf("New simulation parameters sent to server.\n");
-        if (obstacles && obstacles_map == NULL) {
-            obstacles_map = malloc(world_height * sizeof(int*));
-            for (int i = 0; i < world_height; i++)
-                obstacles_map[i] = calloc(world_width, sizeof(int));
-        }
+               /* send obstacles filename (or empty string) as last token */
+               snprintf(buffer, sizeof(buffer),
+                   "NEW_SIM %d %d %d %d %d %d %.2f %.2f %.2f %.2f %127s\n",
+                   width, height, K, replications, obstacles, mode,
+                   p_up, p_down, p_left, p_right, obstacles_filename);
 
-        process_server(sock, width, height, mode, obstacles_map);
-        /* process_server uzatvorí socket pri quit / odpojení; už nevoláme close() tu */
-        sock = -1;
-        if (obstacles_map) {
-            for (int i = 0; i < world_height; i++) free(obstacles_map[i]);
-            free(obstacles_map); obstacles_map = NULL;
-        }
-        continue;
-    }
+            send(sock, buffer, strlen(buffer), 0);
+            mod = mode;
+            world_height = height;
+            world_width = width;
+            printf("New simulation parameters sent to server.\n");
+            
 
-// --- uvoľnenie pamäte prekážok ---
-    if (obstacles_map) {
-        for (int i = 0; i < world_height; i++)
-            free(obstacles_map[i]);
-            free(obstacles_map);
+            process_server(sock, width, height, mode);
+            /* process_server uzatvorí socket pri quit / odpojení; už nevoláme close() tu */
+            sock = -1;
+            continue;
         }
     
     return 0;
