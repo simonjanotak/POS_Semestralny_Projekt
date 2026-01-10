@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <stdbool.h>
+
 #define PORT 12345
 #define MAX_BUFFER 1024
 
@@ -295,11 +296,21 @@ int main() {
             printf("Enter output file name: "); fgets(filename, sizeof(filename), stdin);
             filename[strcspn(filename, "\n")] = 0;
 
-               /* send obstacles filename (or empty string) as last token */
+               /* send obstacles filename (or '-' placeholder) and output filename as last tokens */
+               char obs_token[128];
+               if (obstacles == 1 && obstacles_filename[0] != '\0') {
+                   strncpy(obs_token, obstacles_filename, sizeof(obs_token)-1);
+                   obs_token[sizeof(obs_token)-1] = '\0';
+               } else {
+                   /* send a placeholder so server's sscanf keeps tokens aligned */
+                   strncpy(obs_token, "-", sizeof(obs_token)-1);
+                   obs_token[sizeof(obs_token)-1] = '\0';
+               }
+
                snprintf(buffer, sizeof(buffer),
-                   "NEW_SIM %d %d %d %d %d %d %.2f %.2f %.2f %.2f %127s\n",
+                   "NEW_SIM %d %d %d %d %d %d %.2f %.2f %.2f %.2f %127s %127s\n",
                    width, height, K, replications, obstacles, mode,
-                   p_up, p_down, p_left, p_right, obstacles_filename);
+                   p_up, p_down, p_left, p_right, obs_token, filename);
 
             send(sock, buffer, strlen(buffer), 0);
             mod = mode;
